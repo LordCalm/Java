@@ -2,15 +2,18 @@ import java.io.*;
 
 public class lab_1 {
     public static class MyBigInt {
-        private long[] value;
+        private long[] value; // каждый блок хранит 63 бита
         private boolean sign = true; // true +, false -
+
+        private static final long BLOCK_MASK = 0x7FFFFFFFFFFFFFFFL; // 63 бита
+        private static final int BLOCK_SIZE = 63;
 
         // Конструкторы
         MyBigInt(int num) {
             if (num == 0) {
                 this.value = new long[] { 0 };
             } else {
-                this.value = new long[] { Math.abs((long) num) & 0xFFFFFFFFL }; // нужно сделать беззнаковый тип
+                this.value = new long[] { Math.abs((long) num) & BLOCK_MASK }; // нужно сделать беззнаковый тип
                 this.sign = (num > 0);
             }
         }
@@ -19,16 +22,29 @@ public class lab_1 {
             if (num == 0) {
                 this.value = new long[] { 0 };
             } else {
-                this.value = new long[] { Math.abs((long) num) };
+                this.value = new long[] { Math.abs(num) & BLOCK_MASK };
                 this.sign = (num > 0);
             }
         }
 
         MyBigInt(long[] num, boolean sign) {
-            int Pointer = num.length;
-            this.value = new long[Pointer];
-            System.arraycopy(num, 0, this.value, 0, Pointer);
+            int n = num.length;
+            this.value = new long[n];
+            for (int i = 0; i < n; i++) {
+                this.value[i] = num[i] & BLOCK_MASK; // гарантируем 63 бита
+            }
             this.sign = sign;
+
+            // Дополнительно: убрать ведущие нули
+            int lastNonZero = n;
+            while (lastNonZero > 1 && this.value[lastNonZero - 1] == 0) {
+                lastNonZero--;
+            }
+            if (lastNonZero < n) {
+                long[] trimmed = new long[lastNonZero];
+                System.arraycopy(this.value, 0, trimmed, 0, lastNonZero);
+                this.value = trimmed;
+            }
         }
 
         MyBigInt(String str) {
@@ -42,9 +58,14 @@ public class lab_1 {
                 throw new IllegalArgumentException("Not a decimal number: " + str);
             }
 
+            // Decimal to Binary Conversion Program
+            // Given a non negative number n, the task is to convert
+            // the given number into an equivalent binary representation.
+            // https://www.geeksforgeeks.org/dsa/program-decimal-binary-conversion/?hl=ru-RU
+
             long currentStr = 0;
             int bitIndex = 0; // счётчик битов внутри числа
-            int strCount = (int) ((str.length() * Math.log(10) / Math.log(2)) / 64) + 1;
+            int strCount = (int) ((str.length() * Math.log(10) / Math.log(2)) / BLOCK_SIZE) + 1;
             long[] temp = new long[strCount];
             int Pointer = 0; // счётчик блоков для длинного числа
 
@@ -67,8 +88,8 @@ public class lab_1 {
                 currentStr |= ((long) prevMod << bitIndex); // остаток от деления в конец числа
                 bitIndex++;
 
-                if (bitIndex == 64) {
-                    temp[Pointer++] = currentStr;
+                if (bitIndex == BLOCK_SIZE) {
+                    temp[Pointer++] = currentStr & BLOCK_MASK;
                     currentStr = 0;
                     bitIndex = 0;
                 }
@@ -76,7 +97,7 @@ public class lab_1 {
 
             // Сохраняем последний неполный блок (полные блоки сохранены в цикле)
             if (bitIndex > 0) {
-                temp[Pointer++] = currentStr;
+                temp[Pointer++] = currentStr & BLOCK_MASK;
             }
 
             // Копируем в массив нужного размера
@@ -85,8 +106,8 @@ public class lab_1 {
         }
 
         // Сравнение по модулю
-        // the value 0 if x == y; 
-        // a value less than 0 if x < y as unsigned values; 
+        // the value 0 if x == y;
+        // a value less than 0 if x < y as unsigned values;
         // and a value greater than 0 if x > y as unsigned values
         public static int compareAbs(MyBigInt a, MyBigInt b) {
             int aLenth = a.value.length;
@@ -100,7 +121,8 @@ public class lab_1 {
                     int j = bLenth - (aLenth - i);
                     long bi = (j >= 0) ? b.value[j] : 0;
                     int cmp = Long.compareUnsigned(a.value[i], bi);
-                    if (cmp != 0) return cmp;
+                    if (cmp != 0)
+                        return cmp;
                 }
                 return 0;
             }
@@ -118,11 +140,9 @@ public class lab_1 {
                     long y = (i < b.value.length) ? b.value[i] : 0;
 
                     long sum = x + y + carry;
-
-                    // Проверка переполнения (unsigned)
-                    carry = Long.compareUnsigned(sum, x) < 0 ? 1 : 0;
-
-                    result[i] = sum;
+                    // перенос — старший (64-й) бит относительно базы 2^63
+                    carry = sum >>> BLOCK_SIZE; // 0 или 1
+                    result[i] = sum & BLOCK_MASK; // строго 63 бита
                 }
 
                 if (carry != 0) {
@@ -134,13 +154,16 @@ public class lab_1 {
                     System.arraycopy(result, 0, trimmed, 0, maxLenth);
                     return new MyBigInt(trimmed, a.sign);
                 }
-            }
-            else {
+            } else {
                 // a + (-b) == a - b
                 if (compareAbs(a, b) >= 0) {
-                    return subtractAbs(a, b);
+                    MyBigInt r = subtractAbs(a, b);
+                    r.sign = a.sign;
+                    return r;
                 } else {
-                    return subtractAbs(b, a); // знак большего числа
+                    MyBigInt r = subtractAbs(b, a);
+                    r.sign = b.sign; // знак большего по модулю
+                    return r;
                 }
             }
         }
@@ -159,12 +182,13 @@ public class lab_1 {
 
                 // Проверка заимствования (borrow)
                 if (Long.compareUnsigned(x, y + borrow) < 0) {
+                    // заняли 1 "единицу" из следующего блока (база 2^63)
+                    sub += (1L << BLOCK_SIZE);
                     borrow = 1;
                 } else {
                     borrow = 0;
                 }
-
-                result[i] = sub;
+                result[i] = sub & BLOCK_MASK;
             }
 
             // Убираем старшие нулевые блоки
@@ -190,7 +214,7 @@ public class lab_1 {
                     return result;
                 } else {
                     MyBigInt result = subtractAbs(b, a); // |b| > |a|
-                    result.sign = a.sign;
+                    result.sign = false;
                     return result;
                 }
             } else {
@@ -199,15 +223,74 @@ public class lab_1 {
                 return result;
             }
         }
+
+        // Вывод в строку в дестятичный формат
+        @Override
+        public String toString() {
+            // https://www.geeksforgeeks.org/dsa/program-binary-decimal-conversion/
+            // если число = 0
+            if (value.length == 1 && value[0] == 0) {
+                return "0";
+            }
+
+            // создаём копию, чтобы не портить исходный массив
+            long[] temp = value.clone();
+
+            StringBuilder sb = new StringBuilder();
+
+            // делим большое число на 10 и собираем цифры
+            while (!isZero(temp)) {
+                long remainder = divBy10(temp);
+                sb.append(remainder);
+            }
+
+            if (!sign) {
+                sb.append("-");
+            }
+
+            return sb.reverse().toString();
+        }
+
+        // Проверка, что массив = 0
+        private boolean isZero(long[] arr) {
+            for (long v : arr) {
+                if (v != 0)
+                    return false;
+            }
+            return true;
+        }
+
+        // Деление на 10 для массива блоков по 63 бита
+        private int divBy10(long[] arr) {
+            final long BASE_DIV10 = 922337203685477580L; // floor(2^63 / 10)
+            final long BASE_MOD10 = 8L;                  // 2^63 % 10
+
+            long carry = 0; // остаток (0..9)
+            for (int i = arr.length - 1; i >= 0; i--) {
+                long x = arr[i] & BLOCK_MASK;
+
+                // t = carry*8 + x  (может выглядеть отрицательным, но в unsigned это < 2^63 + 72)
+                long t = x + carry * BASE_MOD10;
+
+                long qLow = Long.divideUnsigned(t, 10);      // floor(t / 10) как unsigned
+                long r = Long.remainderUnsigned(t, 10);      // t % 10 как unsigned
+
+                long q = carry * BASE_DIV10 + qLow;          // итоговый частный для блока
+                arr[i] = q & BLOCK_MASK;                     // строго 63 бита
+                carry = r;                                   // остаток идёт на следующий (младший) блок
+            }
+            return (int) carry; // 0..9
+        }
     }
 
     // Тест
     public static void main(String[] args) throws IOException {
-        MyBigInt v1 = new MyBigInt(13);
-        MyBigInt v2 = new MyBigInt("123456789012345678901234567890");
-        MyBigInt v3 = new MyBigInt(-5);
-        v1 = MyBigInt.add(v1, v3);
-        System.out.println((v1.sign ? "+" : "-"));
-        System.out.println(Long.toBinaryString(v1.value[0]));
+        MyBigInt v1 = new MyBigInt(7);
+        MyBigInt v2 = new MyBigInt("1000000000000000000000000");
+        MyBigInt v3 = new MyBigInt(20);
+        MyBigInt result = MyBigInt.add(v1, v2);
+        System.out.println(v2.toString());
+        System.out.println(Long.toBinaryString(v2.value[0]));
+        System.out.println(Long.toBinaryString(v2.value[1]));
     }
 }
