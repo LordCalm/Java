@@ -9,6 +9,10 @@ public class lab_1 {
         private static final int BLOCK_SIZE = 63;
 
         // Конструкторы
+        MyBigInt() {
+            this.value = new long[] { 0 };
+        }
+
         MyBigInt(int num) {
             if (num == 0) {
                 this.value = new long[] { 0 };
@@ -21,6 +25,10 @@ public class lab_1 {
         MyBigInt(long num) {
             if (num == 0) {
                 this.value = new long[] { 0 };
+            } else if (num == Long.MIN_VALUE) {
+                // -2^63 = -(1 << 63)
+                this.value = new long[] { 0, 1 }; // второй блок = 1, т.е. 2^63
+                this.sign = false;
             } else {
                 this.value = new long[] { Math.abs(num) & BLOCK_MASK };
                 this.sign = (num > 0);
@@ -56,6 +64,13 @@ public class lab_1 {
             }
             if (!str.matches("\\d+")) {
                 throw new IllegalArgumentException("Not a decimal number: " + str);
+            }
+
+            // отдельная обработка нуля
+            if (str.equals("0")) {
+                this.value = new long[]{0};
+                this.sign = true; // по соглашению 0 всегда положительный
+                return;
             }
 
             // Decimal to Binary Conversion Program
@@ -103,6 +118,23 @@ public class lab_1 {
             // Копируем в массив нужного размера
             this.value = new long[Pointer];
             System.arraycopy(temp, 0, value, 0, Pointer);
+        }
+
+        // Изменение содержимого отдельных блоков
+        public void setBlock(int index, long newValue) { 
+            if (index >= 0 && index < value.length) {
+                value[index] = newValue & BLOCK_MASK;
+            } else {
+                throw new IndexOutOfBoundsException();
+            }
+        }
+
+        public long getBlock(int index) {
+            if (index >= 0 && index < value.length) {
+                return value[index];
+            } else {
+                throw new IndexOutOfBoundsException();
+            }
         }
 
         // Сравнение по модулю
@@ -224,6 +256,117 @@ public class lab_1 {
             }
         }
 
+        // Умножение Алгоритм Карацубы
+        // a = aHigh * B + aLow
+        // b = bHigh * B + bLow
+        // B = 2^(half*BLOCK_SIZE)
+
+        // a*b = z2*B^2 + z1*B + z0
+        public static MyBigInt multiplyKaratsuba(MyBigInt a, MyBigInt b) {
+            // базовый случай: если числа маленькие, используем школьное умножение
+            if (a.value.length == 1 && b.value.length == 1) {
+                long x = a.value[0] & BLOCK_MASK;
+                long y = b.value[0] & BLOCK_MASK;
+
+                if (x <= 0x7FFFFFFFL && y <= 0x7FFFFFFFL) {
+                    // оба ≤ 31 бит → безопасно умножаем
+                    long prod = x * y;
+                    return new MyBigInt(new long[] { prod & BLOCK_MASK, prod >>> BLOCK_SIZE }, a.sign == b.sign);
+                } else {
+                    // делим каждый блок на "левую" и "правую" половины по 31 бит
+                    MyBigInt aLow = new MyBigInt(new long[] { x & 0x7FFFFFFFL }, true);
+                    MyBigInt aHigh = new MyBigInt(new long[] { x >>> 31 }, true);
+                    MyBigInt bLow = new MyBigInt(new long[] { y & 0x7FFFFFFFL }, true);
+                    MyBigInt bHigh = new MyBigInt(new long[] { y >>> 31 }, true);
+
+                    // Карацуба для этих половинок
+                    MyBigInt z0 = multiplyKaratsuba(aLow, bLow);
+                    MyBigInt z2 = multiplyKaratsuba(aHigh, bHigh);
+                    MyBigInt z1 = multiplyKaratsuba(add(aLow, aHigh), add(bLow, bHigh));
+                    z1 = subtract(subtract(z1, z0), z2);
+
+                    // собираем результат: z0 + (z1 << 31) + (z2 << 62)
+                    MyBigInt res = add(shiftLeft(z2, 62),
+                            add(shiftLeft(z1, 31), z0));
+                    res.sign = (a.sign == b.sign);
+                    return res;
+                }
+            }
+
+            int n = Math.max(a.value.length, b.value.length);
+            int half = (n + 1) / 2;
+
+            // разделяем на "левую" и "правую" части
+            MyBigInt aLow = a.slice(0, half);
+            MyBigInt aHigh = a.slice(half, a.value.length);
+            MyBigInt bLow = b.slice(0, half);
+            MyBigInt bHigh = b.slice(half, b.value.length);
+
+            // рекурсивные вызовы
+            MyBigInt z0 = multiplyKaratsuba(aLow, bLow);
+            MyBigInt z2 = multiplyKaratsuba(aHigh, bHigh);
+            MyBigInt z1 = multiplyKaratsuba(add(aLow, aHigh), add(bLow, bHigh));
+            z1 = subtract(subtract(z1, z0), z2);
+
+            // собираем результат: z0 + (z1 << (half*BLOCK_SIZE)) + (z2 <<
+            // (2*half*BLOCK_SIZE))
+            MyBigInt res = add(shiftLeft(z2, 2 * half * BLOCK_SIZE),
+                    add(shiftLeft(z1, half * BLOCK_SIZE), z0));
+
+            res.sign = (a.sign == b.sign);
+            return res;
+        }
+
+        // Возвращает подмассив блоков [from, to)
+        public MyBigInt slice(int from, int to) {
+            if (from < 0)
+                from = 0;
+            if (to > value.length)
+                to = value.length;
+            if (from >= to) {
+                return new MyBigInt(new long[] { 0 }, true);
+            }
+            int len = to - from;
+            long[] part = new long[len];
+            System.arraycopy(this.value, from, part, 0, len);
+            return new MyBigInt(part, this.sign);
+        }
+
+        // Сдвиг влево на shiftBits бит
+        public static MyBigInt shiftLeft(MyBigInt a, int shiftBits) {
+            if (shiftBits == 0 || (a.value.length == 1 && a.value[0] == 0)) {
+                return new MyBigInt(a.value, a.sign);
+            }
+
+            int blockShift = shiftBits / BLOCK_SIZE; // сколько целых блоков нужно добавить слева
+            int bitShift = shiftBits % BLOCK_SIZE; // остаток битов
+
+            long[] res = new long[a.value.length + blockShift + 1];
+
+            long carry = 0;
+            for (int i = 0; i < a.value.length; i++) {
+                long cur = a.value[i] & BLOCK_MASK;
+                long shifted = (cur << bitShift) & BLOCK_MASK; // сдвиг
+                // в итоговом массиве должен быть записан текущий сдвиг и то, что вылезло из
+                // предыдущего блока
+                res[i + blockShift] |= shifted | carry;
+                carry = (bitShift == 0) ? 0 : (cur >>> (BLOCK_SIZE - bitShift));
+            }
+            // если что-то осталось, записываем в последний блок слева
+            if (carry != 0) {
+                res[a.value.length + blockShift] = carry;
+            }
+
+            // убираем ведущие нули
+            int last = res.length;
+            while (last > 1 && res[last - 1] == 0)
+                last--;
+            long[] trimmed = new long[last];
+            System.arraycopy(res, 0, trimmed, 0, last);
+
+            return new MyBigInt(trimmed, a.sign);
+        }
+
         // Вывод в строку в дестятичный формат
         @Override
         public String toString() {
@@ -263,34 +406,76 @@ public class lab_1 {
         // Деление на 10 для массива блоков по 63 бита
         private int divBy10(long[] arr) {
             final long BASE_DIV10 = 922337203685477580L; // floor(2^63 / 10)
-            final long BASE_MOD10 = 8L;                  // 2^63 % 10
+            final long BASE_MOD10 = 8L; // 2^63 % 10
 
             long carry = 0; // остаток (0..9)
             for (int i = arr.length - 1; i >= 0; i--) {
                 long x = arr[i] & BLOCK_MASK;
 
-                // t = carry*8 + x  (может выглядеть отрицательным, но в unsigned это < 2^63 + 72)
+                // t = carry*8 + x (может выглядеть отрицательным, но в unsigned это < 2^63 +
+                // 72)
                 long t = x + carry * BASE_MOD10;
 
-                long qLow = Long.divideUnsigned(t, 10);      // floor(t / 10) как unsigned
-                long r = Long.remainderUnsigned(t, 10);      // t % 10 как unsigned
+                long qLow = Long.divideUnsigned(t, 10); // floor(t / 10) как unsigned
+                long r = Long.remainderUnsigned(t, 10); // t % 10 как unsigned
 
-                long q = carry * BASE_DIV10 + qLow;          // итоговый частный для блока
-                arr[i] = q & BLOCK_MASK;                     // строго 63 бита
-                carry = r;                                   // остаток идёт на следующий (младший) блок
+                long q = carry * BASE_DIV10 + qLow; // итоговый частный для блока
+                arr[i] = q & BLOCK_MASK; // строго 63 бита
+                carry = r; // остаток идёт на следующий (младший) блок
             }
             return (int) carry; // 0..9
+        }
+        
+        // Запись в десятичном виде в файл
+        public void saveToFile(String filename) throws IOException {
+            try (BufferedWriter writer = new BufferedWriter(new FileWriter(filename))) {
+                writer.write(this.toString());
+            }
+        }
+
+        // Чтение в десятичном виде из файла
+        public static MyBigInt loadFromFile(String filename) throws IOException {
+            try (BufferedReader reader = new BufferedReader(new FileReader(filename))) {
+                String line = reader.readLine();
+                return new MyBigInt(line);
+            }
+        }
+        
+        // Запись в двоичном виде в файл
+        public void saveBinary(String filename) throws IOException {
+            try (DataOutputStream out = new DataOutputStream(new FileOutputStream(filename))) {
+                out.writeBoolean(sign);
+                out.writeInt(value.length);
+                for (long v : value) {
+                    out.writeLong(v);
+                }
+            }
+        }
+
+        // Чтение в двоичном виде из файла
+        public static MyBigInt loadBinary(String filename) throws IOException {
+            try (DataInputStream in = new DataInputStream(new FileInputStream(filename))) {
+                boolean sign = in.readBoolean();
+                int len = in.readInt();
+                long[] value = new long[len];
+                for (int i = 0; i < len; i++) {
+                    value[i] = in.readLong();
+                }
+                MyBigInt res = new MyBigInt();
+                res.sign = sign;
+                res.value = value;
+                return res;
+            }
         }
     }
 
     // Тест
     public static void main(String[] args) throws IOException {
-        MyBigInt v1 = new MyBigInt(7);
-        MyBigInt v2 = new MyBigInt("1000000000000000000000000");
-        MyBigInt v3 = new MyBigInt(20);
-        MyBigInt result = MyBigInt.add(v1, v2);
-        System.out.println(v2.toString());
-        System.out.println(Long.toBinaryString(v2.value[0]));
-        System.out.println(Long.toBinaryString(v2.value[1]));
+        MyBigInt v1 = new MyBigInt("0");
+        MyBigInt v2 = new MyBigInt("10000000000000000000000000");
+        MyBigInt v3 = new MyBigInt(Long.MIN_VALUE);
+        v2.saveToFile("vec.txt");
+        MyBigInt result = MyBigInt.loadFromFile("vec.txt");
+        System.out.println(result.toString());
     }
 }
