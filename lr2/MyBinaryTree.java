@@ -2,6 +2,7 @@ package lr2;
 import lr3.*;
 
 import java.util.ArrayList;
+import java.util.ConcurrentModificationException;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
@@ -16,15 +17,25 @@ public class MyBinaryTree<T extends UserType> implements Iterable<T> {
         private T value;
         MyNode left;
         MyNode right;
+        public MyNode parent;
 
-        MyNode(T num) {
+        MyNode(T num, MyNode parent) {
             this.value = num;
+            this.parent = parent;
             left = right = null;
         }
     }
-    
+
     private MyNode root;
     private Comparator cmp;
+
+    // Вектор созданных итераторов
+    private List<MyTreeIterator> activeIterators = new ArrayList<>();
+
+    // Счетчик изменений структуры для контроля валидности итераторов
+    private int modCount = 0;
+
+
 
     public interface NodeAction<T> {
         void toDo(T value);
@@ -36,20 +47,29 @@ public class MyBinaryTree<T extends UserType> implements Iterable<T> {
     }
 
     // Вставка
-    private MyNode addRecursive(MyNode current, T num) {
-        if (current == null) {
-            return new MyNode(num);
-        }
+    private void addRecursive(MyNode current, T num) {
         if (cmp.compare(num, current.value) < 0) {
-            current.left = addRecursive(current.left, num);
+            if (current.left == null) {
+                current.left = new MyNode(num, current);
+            } else {
+                addRecursive(current.left, num);
+            }
         } else if (cmp.compare(num, current.value) > 0) {
-            current.right = addRecursive(current.right, num);
+            if (current.right == null) {
+                current.right = new MyNode(num, current);
+            } else {
+                addRecursive(current.right, num);
+            }
         }
-        return current;
     }
 
     public void add(T num) {
-        root = addRecursive(root, num);
+        if (root == null) {
+            root = new MyNode(num, null);
+        } else {
+            addRecursive(root, num);
+        }
+        modCount++;
     }
 
     // Поиск элемента
@@ -75,15 +95,20 @@ public class MyBinaryTree<T extends UserType> implements Iterable<T> {
             return null;
         }
         if (cmp.compare(num, current.value) == 0) {
+            // 1. Нет детей
             if (current.left == null && current.right == null) {
                 return null;
             }
+            // 2. Один ребенок
             if (current.right == null) {
+                current.left.parent = current.parent; // Обновляем родителя
                 return current.left;
             }
             if (current.left == null) {
+                current.right.parent = current.parent; // Обновляем родителя
                 return current.right;
             }
+            // 3. Два ребенка
             T smallestValue = findSmallestValue(current.right);
             current.value = smallestValue;
             current.right = deleteRecursive(current.right, smallestValue);
@@ -91,9 +116,9 @@ public class MyBinaryTree<T extends UserType> implements Iterable<T> {
         }
         if (cmp.compare(num, current.value) < 0) {
             current.left = deleteRecursive(current.left, num);
-            return current;
+        } else {
+            current.right = deleteRecursive(current.right, num);
         }
-        current.right = deleteRecursive(current.right, num);
         return current;
     }
 
@@ -102,9 +127,9 @@ public class MyBinaryTree<T extends UserType> implements Iterable<T> {
     }
 
     public void delete(T num) {
-        if (num == null)
-            return;
+        if (num == null) return;
         root = deleteRecursive(root, num);
+        modCount++;
     }
 
     // Удаление по индексу
@@ -185,42 +210,222 @@ public class MyBinaryTree<T extends UserType> implements Iterable<T> {
         return getByIndex(node.right, index);
     }
 
-    // Итератор
+    // --- Реализация расширенного Итератора ---
     @Override
     public java.util.Iterator<T> iterator() {
-        return new MyBinaryTreeIterator();
+        return createIterator();
     }
 
-    // https://www.geeksforgeeks.org/dsa/implement-binary-search-treebst-iterator/
-    class MyBinaryTreeIterator implements Iterator<T> {
-        private final Stack<MyNode> stack = new Stack<>();
-        private MyBinaryTree<T>.MyNode current;
-        
-        // инициализация
-        public MyBinaryTreeIterator() {
-            this.current = root;
+    // Метод создания итератора, который регистрирует его в списке
+    public MyTreeIterator createIterator() {
+        MyTreeIterator it = new MyTreeIterator();
+        activeIterators.add(it); // Регистрация в векторе
+        return it;
+    }
+
+    public class MyTreeIterator implements java.util.Iterator<T> {
+        private MyNode current;
+        private boolean valid = true;
+
+        public MyTreeIterator() {
+            this.current = null; // Изначально не установлен
         }
-        
-        // вернуть false, если следующего не существует
+
+        private void invalidate() {
+            valid = false;
+        }
+
+        // Проверка на валидность (ConcurrentModification)
+        private void checkValidity() {
+            if (!valid) {
+                throw new ConcurrentModificationException("Итератор невалиден: коллекция была изменена другим итератором.");
+            }
+        }
+
+        private void invalidateOtherIterators(MyTreeIterator current) {
+            for (MyTreeIterator it : activeIterators) {
+                if (it != current) {
+                    it.invalidate();
+                }
+            }
+        }
+
+        // --- Навигация ---
+
+        // Установить на первый элемент (самый левый)
+        public void first() {
+            checkValidity();
+            if (root == null) {
+                current = null;
+                return;
+            }
+            MyNode node = root;
+            while (node.left != null) {
+                node = node.left;
+            }
+            current = node;
+        }
+
+        // Установить на последний элемент (самый правый)
+        public void last() {
+            checkValidity();
+            if (root == null) {
+                current = null;
+                return;
+            }
+            MyNode node = root;
+            while (node.right != null) {
+                node = node.right;
+            }
+            current = node;
+        }
+
+        // Перейти к следующему (in-order successor)
         @Override
         public boolean hasNext() {
-            return current != null || !stack.isEmpty();
+            checkValidity();
+            // Упрощенная проверка, есть ли следующий элемент в дереве относительно current
+            if (root == null) return false;
+            if (current == null) return true; // Если итератор в начале, next доступен
+            
+            // Логика поиска следующего без изменения состояния
+            MyNode temp = current;
+            if (temp.right != null) {
+                return true;
+            }
+            while (temp.parent != null && temp == temp.parent.right) {
+                temp = temp.parent;
+            }
+            return temp.parent != null;
         }
-        
-        // вернуть текущее значение и обновить итератор
+
         @Override
         public T next() {
-            while (current != null) {
-                stack.push(current);
-                current = current.left;
+            checkValidity();
+            if (current == null) {
+                first(); // Если не инициализирован, идем в начало
+            } else {
+                // Алгоритм поиска следующего узла (Successor)
+                if (current.right != null) {
+                    current = current.right;
+                    while (current.left != null) {
+                        current = current.left;
+                    }
+                } else {
+                    while (current.parent != null && current == current.parent.right) {
+                        current = current.parent;
+                    }
+                    current = current.parent;
+                }
             }
-            if (stack.isEmpty()) {
-                throw new NoSuchElementException();
+            
+            if (current == null) throw new NoSuchElementException();
+            return current.value;
+        }
+
+        // Перейти к предыдущему (in-order predecessor)
+        public T previous() {
+            checkValidity();
+            if (current == null) {
+                last(); // Если не инициализирован, идем в конец (или начало, зависит от логики, обычно last для reverse traversal)
+            } else {
+                // Алгоритм поиска предыдущего узла
+                if (current.left != null) {
+                    current = current.left;
+                    while (current.right != null) {
+                        current = current.right;
+                    }
+                } else {
+                    while (current.parent != null && current == current.parent.left) {
+                        current = current.parent;
+                    }
+                    current = current.parent;
+                }
             }
-            MyBinaryTree<T>.MyNode node = stack.pop();
-            T value = node.value;
-            current = node.right;
-            return value;
+            
+            if (current == null) throw new NoSuchElementException();
+            return current.value;
+        }
+
+        // Перейти по логическому индексу (0 - первый элемент при обходе)
+        public void goByIndex(int index) {
+            checkValidity();
+            first();
+            for (int i = 0; i < index; i++) {
+                if (current == null) throw new IndexOutOfBoundsException();
+                next();
+            }
+        }
+
+        // Получить текущее значение
+        public T currentItem() {
+            checkValidity();
+            if (current == null) throw new IllegalStateException("Итератор не установлен в позицию");
+            return current.value;
+        }
+
+        // --- Модификация ---
+
+        // Замещение значения
+        // В бинарном дереве нельзя просто заменить значение, так как нарушится сортировка.
+        // Поэтому мы удаляем старое и добавляем новое. Итератор ставим на новое.
+        public void replace(T newValue) {
+            checkValidity();
+            if (current == null) throw new IllegalStateException();
+            
+            T oldValue = current.value;
+            delete(oldValue); // Удаляем текущее
+            add(newValue); // Добавляем новое
+            
+            // Инвалидируем остальные итераторы
+            invalidateOtherIterators(this);
+            
+            // Перепозиционируемся на новый элемент
+            MyNode node = root;
+            while (node != null) {
+                int cmpResult = cmp.compare(newValue, node.value);
+                if (cmpResult == 0) {
+                    current = node;
+                    break;
+                } else if (cmpResult < 0) {
+                    node = node.left;
+                } else {
+                    node = node.right;
+                }
+            }
+
+            this.valid = true;
+        }
+
+        // Вставка (вставка в BST определяется значением, а не позицией итератора)
+        // Мы добавляем значение в дерево и обновляем итератор.
+        public void insert(T newValue) {
+            checkValidity();
+            add(newValue);
+
+            // Инвалидируем остальные итераторы
+            invalidateOtherIterators(this);
+
+            this.valid = true;
+        }
+
+        // Удаление текущего элемента через итератор
+        @Override
+        public void remove() {
+            checkValidity();
+            if (current == null) throw new IllegalStateException();
+            
+            T valueToRemove = current.value;
+            // Удаляем элемент
+            MyBinaryTree.this.delete(valueToRemove);
+
+            // Инвалидируем ВСЕ остальные итераторы
+            invalidateOtherIterators(this);
+
+            // Этот итератор остаётся валидным
+            this.valid = true;
+
+            current = null;
         }
     }
 
@@ -235,7 +440,7 @@ public class MyBinaryTree<T extends UserType> implements Iterable<T> {
     private MyNode buildBalancedTree(List<T> sorted, int start, int end) {
         if (start > end) return null;
         int mid = (start + end) / 2;
-        MyNode node = new MyNode(sorted.get(mid));
+        MyNode node = new MyNode(sorted.get(mid), null);
         node.left = buildBalancedTree(sorted, start, mid - 1);
         node.right = buildBalancedTree(sorted, mid + 1, end);
         return node;
